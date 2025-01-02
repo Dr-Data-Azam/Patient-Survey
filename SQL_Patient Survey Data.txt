@@ -1,0 +1,154 @@
+--select * from "postgres"."Hospital_Data".hospital_beds
+
+--select * from "postgres"."Hospital_Data".hcahps_data
+
+/*
+--Creating Tables for HCAHPS lesson--
+
+
+-- Note, before you run this step, you should create a schema called Hopsital Data --
+CREATE TABLE IF NOT EXISTS "postgres"."Hospital_Data".hospital_beds
+(
+     provider_ccn integer
+    ,hospital_name character varying(255)
+    ,fiscal_year_begin_date character varying(10)
+    ,fiscal_year_end_date character varying(10)
+    ,number_of_beds integer
+);
+
+CREATE TABLE IF NOT EXISTS "postgres"."Hospital_Data".HCAHPS_data
+(
+    facility_id character varying(10),
+    facility_name character varying(255),
+    address character varying(255),
+    city character varying(50),
+    state character varying(2),
+    zip_code character varying(10),
+    county_or_parish character varying(50),
+    telephone_number character varying(20),
+    hcahps_measure_id character varying(255),
+    hcahps_question character varying(255),
+    hcahps_answer_description character varying(255),
+    hcahps_answer_percent integer,
+    num_completed_surveys integer,
+    survey_response_rate_percent integer,
+    start_date character varying(10),
+    end_date character varying(10)
+);
+*/
+
+/*
+1)))))))------Hospital Names is common in both the tables.
+        I only want the number of hospital beds per hospital from hospital_bed table, because i want to categorise them into large, medium, small 
+		so that it can be compared only in the  peer comparison groups 
+        where we can evaluate medium hospitals against other medium hospitals in Washington state or Oregan or New York or California,
+        but the problem is that number_of_beds isn't formatted correctly yet because-------
+        Some of these hospitals will list out multiples dates for which they had different number of hospital beds so some of this information in here is outdated,
+        we need to kickout the older reporting of the hospital beds and only going to pick the most recent reporting of hospital beds
+		and then join with hcahps data set so that we dont get a one to many type join.
+
+2)))))))------Dates aren't formatted in a very good way in hospitals_beds table, SQL typically doesn't like dates in this format but excel keeps dates in this way.
+			   so we will reformat that so that it can be recognised as dates by SQL
+			   
+3)))))))------provider_ccn in hospital_beds (facility_id in hcahps_data) is a standard 6 digit code (CMS Certification Number) which Uniquely identifies hospitals, 
+              but in hospital_beds table it might not be 6 digit as Excels does not considers zero on the left side,
+              so we will have to pad it with zero in SQL until it becomes 6 digit number.
+
+4)))))))------After  this we will join the hospital_beds dataset with hcahps_data table,
+              but we will have to correct the facility_id where we have to pad the leading zeroes in it to make it 6 digits 
+			  Also we have to solve the date issues in the hcahps_data table. (as they are in text based format)
+*/
+
+/*
+Solution-2))--- Right now the datatype for fiscal_year_begin_date & fiscal_year_end_date is character Varying
+                To change it into date datatype we have used to_date function
+				to_date function accepts 2 parametres,
+				In the first parametre its going to look at the column
+				and in the second parametre its going to say what is the format of date (in existance) and i will start recognising that as date from now onwards
+				Now the SQL will consider it as date and will convert into YYYY-MM-DD 
+
+Solution-3))--- we will use lpad function to pad '0' on left side to make it 6 digit number,
+                But the problem is lpad function doesnot work on integer datatype therefore we have to cast it to text type and will keep it in text type.
+				So we will pass 3 arguments--- cast, number of digit i want, and what needs to be padded.
+
+Solution-1))--- Using a combinationn of CTE and a patitioning statement. CTE is like storing a data in a box temporarily and retrieve it whenever we want to.
+                CTE is going to allow me to put my preparation of these datasets through a series of steps and its going to be a lot more clean to read.
+				    we could also use subqueries in its place but using CTE is more cleaner
+			    Now we will add one more Column to CTE, which is a partitioning statement and we are going to utilise row number over that partitioning statement
+				and its going to assign 1 to the most recent value if the hospital have multiple rows of data, and 2....3....4..... accordingly. 
+				
+			    row_number(): A window function that assigns a unique sequential number to each row within a partition (group).
+				over: Specifies the window or group over which the function operates. It allows grouping and ordering.
+				partition by provider_ccn: Divides the rows into groups based on the provider_ccn column. Within each provider_ccn group, the numbering restarts from 1.
+				order by to_date(fiscal_year_end_date, 'MM/DD/YYY') desc:
+				as nth_row:
+
+				For each provider_ccn, the query: Converts the fiscal_year_end_date into a proper date format.
+				                                  Orders the rows by the date in descending order (latest first).
+												   Assigns a sequential number starting at 1 to each row within the same provider_ccn group, 
+												   based on the specified order.
+*/
+
+
+/*
+Now the row_number function have assigned the groups based on similar provider_ccn and order by latest date as 1....
+Now we will make sure that there is no duplicates that would remain if i were to set a filter to only look for the 1's and not include the 2's or 3's
+below is the code where we order by count(*), beacuse if there is any value of 2 then it will pop up on top
+
+select provider_ccn, count(*) as count_of_rows
+from hospital_beds_prep
+where nth_row = 1
+group by provider_ccn
+order by count(*) desc
+*/
+
+create table "postgres"."Hospital_Data".Tableau_file as
+with hospital_beds_prep as 
+(
+select lpad(cast(provider_ccn as text), 6, '0') as provider_ccn,
+       hospital_name,
+	   to_date(fiscal_year_begin_date, 'MM/DD/YYYY') as fiscal_year_begin_date,
+	   to_date(fiscal_year_end_date, 'MM/DD/YYY') as fiscal_year_end_date,
+	   number_of_beds,
+	   row_number() over (partition by provider_ccn order by to_date(fiscal_year_end_date, 'MM/DD/YYY') desc) as nth_row
+from "postgres"."Hospital_Data".hospital_beds
+)
+
+select 
+       lpad(cast(facility_id as text), 6, '0') as provider_ccn,
+	   to_date(start_date, 'MM/DD/YYYY') as start_date_converted,
+	   to_date(end_date, 'MM/DD/YYY') as end_date_converted,
+	   hcahps.*,
+	   beds.number_of_beds,
+	   beds.fiscal_year_begin_date as beds_start_report_period,
+	   beds.fiscal_year_end_date as beds_end_report_period
+	   
+from "postgres"."Hospital_Data".hcahps_data as hcahps
+left join hospital_beds_prep as beds
+  on lpad(cast(facility_id as text), 6, '0') = beds.provider_ccn
+and beds.nth_row = 1
+
+
+
+
+/*
+Why we didn't directly used 'on hcahps.provider_ccn = beds.provider_ccn'???????????  
+Because we expect that SQL reads the code from top to bottom like this:-
+SELECT
+FROM Table 1
+JOIN Table 2
+ ON...
+WHERE
+GROUP BY 
+HAVING
+
+BUT SQL DOES NOT READ IT IN THIS SEQUENCE INSTEAD IT READS IT IN THIS SEQUENCE:-
+
+FROM / JOIN
+WHERE
+GROUP BY 
+HAVING
+SELECT
+ORDER BY
+LIMIT
+*/
